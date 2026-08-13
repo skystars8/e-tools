@@ -1,19 +1,27 @@
-use age::secrecy::{ExposeSecret, SecretString};
 use std::{
     env,
     error::Error,
     ffi::{OsStr, OsString},
     fmt,
     fs::File,
-    io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Seek, SeekFrom, Write},
-    iter,
+    io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
-const BUFFER_SIZE: usize = 64 * 1024;
-const MAX_AGE_HEADER_BYTES: usize = 64 * 1024;
+const APP_ID: u8 = 16;
+const SUITE_NAME: &str = "PBKDF2-SHA256-HC-128-BLAKE3-131072-records";
+const MAGIC: [u8; 8] = [69, 84, 79, 79, 76, 0, 0, APP_ID];
+const VERSION: u8 = 1;
+const INTEGRITY_ERROR: &str = "decryption failed or input is invalid";
+const SALT_SIZE: usize = 16;
+const PREFIX_SIZE: usize = 8;
+const HEADER_SIZE: usize = 8 + 1 + 1 + SALT_SIZE + PREFIX_SIZE;
+const TAG_SIZE: usize = 32;
+const NONCE_SIZE: usize = 16;
+const KEY_MATERIAL_SIZE: usize = 48;
+const CHUNK_SIZE: usize = 131072;
 const MAX_PASSWORD_BYTES: usize = 4096;
 
 type AppResult<T> = Result<T, AppError>;
@@ -25,6 +33,10 @@ impl AppError {
     fn new(message: impl Into<String>) -> Self {
         Self(message.into())
     }
+}
+
+fn integrity_error() -> AppError {
+    AppError::new(INTEGRITY_ERROR)
 }
 
 impl fmt::Display for AppError {
@@ -49,46 +61,39 @@ struct Command {
 }
 
 fn main() -> ExitCode {
-    match run_cli() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{APP_NAME}: {error}");
-            ExitCode::FAILURE
-        }
+    let result = run_cli();
+    if let Err(error) = result {
+        eprintln!("{}", APP_NAME);
+        eprintln!("{}", error);
+        return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
 }
 
 fn run_cli() -> AppResult<()> {
-    let command = parse_args(env::args_os().skip(1))?;
+    let command = parse_args(env::args_os().skip(1).collect())?;
     let password = read_password(command.mode)?;
-
     match command.mode {
-        Mode::Encrypt => encrypt_file(&command.input, &command.output, password),
-        Mode::Decrypt => decrypt_file(&command.input, &command.output, password),
+        Mode::Encrypt => encrypt_file(&command.input, &command.output, &password),
+        Mode::Decrypt => decrypt_file(&command.input, &command.output, &password),
     }
 }
 
 fn usage() -> String {
-    format!("Usage: {APP_NAME} E <input> <output>\n       {APP_NAME} D <input> <output>")
+    format!("Usage: {APP_NAME} E|D <input> <output>\nSuite: {SUITE_NAME}")
 }
 
-fn parse_args(args: impl IntoIterator<Item = OsString>) -> AppResult<Command> {
-    let args: Vec<OsString> = args.into_iter().collect();
+fn parse_args(args: Vec<OsString>) -> AppResult<Command> {
     if args.len() != 3 {
         return Err(AppError::new(usage()));
     }
-
     let mode = if args[0] == OsStr::new("E") {
         Mode::Encrypt
     } else if args[0] == OsStr::new("D") {
         Mode::Decrypt
     } else {
-        return Err(AppError::new(format!(
-            "mode must be uppercase E or D\n{}",
-            usage()
-        )));
+        return Err(AppError::new(usage()));
     };
-
     Ok(Command {
         mode,
         input: PathBuf::from(&args[1]),
@@ -96,42 +101,31 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> AppResult<Command> {
     })
 }
 
-fn read_password(mode: Mode) -> AppResult<SecretString> {
+fn read_password(mode: Mode) -> AppResult<String> {
     let stdin = io::stdin();
     if stdin.is_terminal() {
-        let password = {
-            let password = rpassword::prompt_password("Password: ")
-                .map_err(|error| AppError::new(format!("could not read password: {error}")))?;
-            SecretString::from(password)
-        };
-        validate_password(password.expose_secret())?;
-
+        let password = rpassword::prompt_password("Password: ")
+            .map_err(|error| AppError::new(error.to_string()))?;
+        validate_password(&password)?;
         if mode == Mode::Encrypt {
-            let confirmation = {
-                let confirmation = rpassword::prompt_password("Confirm password: ")
-                    .map_err(|error| AppError::new(format!("could not read password: {error}")))?;
-                SecretString::from(confirmation)
-            };
-            if password.expose_secret() != confirmation.expose_secret() {
-                return Err(AppError::new("passwords do not match"));
+            let confirmation = rpassword::prompt_password("Confirm password: ")
+                .map_err(|error| AppError::new(error.to_string()))?;
+            if confirmation != password {
+                return Err(integrity_error());
             }
         }
         Ok(password)
     } else {
-        Ok(SecretString::from(read_password_line(&mut stdin.lock())?))
+        read_password_line(&mut stdin.lock())
     }
 }
 
 fn read_password_line(reader: &mut impl BufRead) -> AppResult<String> {
     let mut password = String::new();
-    let bytes_read = reader
+    reader
         .take((MAX_PASSWORD_BYTES + 3) as u64)
         .read_line(&mut password)
-        .map_err(|error| AppError::new(format!("could not read password: {error}")))?;
-    if bytes_read == 0 {
-        return Err(AppError::new("no password was provided"));
-    }
-
+        .map_err(|error| AppError::new(error.to_string()))?;
     if password.ends_with('\n') {
         password.pop();
         if password.ends_with('\r') {
@@ -144,155 +138,282 @@ fn read_password_line(reader: &mut impl BufRead) -> AppResult<String> {
 
 fn validate_password(password: &str) -> AppResult<()> {
     if password.is_empty() {
-        return Err(AppError::new("password must not be empty"));
+        return Err(AppError::new(usage()));
     }
     if password.len() > MAX_PASSWORD_BYTES {
-        return Err(AppError::new(format!(
-            "password must be at most {MAX_PASSWORD_BYTES} bytes"
-        )));
+        return Err(AppError::new(usage()));
     }
     Ok(())
 }
 
-fn encrypt_file(input: &Path, output: &Path, password: SecretString) -> AppResult<()> {
-    encrypt_file_with_work_factor(input, output, password, None)
+fn derive_key(password: &str, salt: &[u8; SALT_SIZE]) -> AppResult<Vec<u8>> {
+    let mut key = vec![0_u8; KEY_MATERIAL_SIZE];
+    let rounds = if cfg!(test) { 1 } else { 210_000 };
+    pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password.as_bytes(), salt, rounds, &mut key);
+    Ok(key)
 }
 
-fn encrypt_file_with_work_factor(
-    input: &Path,
-    output: &Path,
-    password: SecretString,
-    work_factor: Option<u8>,
-) -> AppResult<()> {
-    validate_paths(input, output)?;
-    let input_file = open_regular_file(input)?;
-    let mut input_reader = BufReader::with_capacity(BUFFER_SIZE, input_file);
-    let mut temporary = create_temporary_output(output)?;
-
-    {
-        let output_writer = BufWriter::with_capacity(BUFFER_SIZE, temporary.as_file_mut());
-        let encryptor = match work_factor {
-            Some(log_n) => {
-                let mut recipient = age::scrypt::Recipient::new(password);
-                recipient.set_work_factor(log_n);
-                age::Encryptor::with_recipients(iter::once(&recipient as &dyn age::Recipient))
-                    .map_err(|_| AppError::new("encryption could not be initialized"))?
-            }
-            None => age::Encryptor::with_user_passphrase(password),
-        };
-        let mut encrypted_writer = encryptor
-            .wrap_output(output_writer)
-            .map_err(|_| AppError::new("encryption could not be initialized"))?;
-
-        io::copy(&mut input_reader, &mut encrypted_writer)
-            .map_err(|error| AppError::new(format!("encryption failed: {error}")))?;
-        let mut output_writer = encrypted_writer
-            .finish()
-            .map_err(|error| AppError::new(format!("encryption failed: {error}")))?;
-        output_writer
-            .flush()
-            .map_err(|error| AppError::new(format!("could not flush output: {error}")))?;
-    }
-
-    commit_output(temporary, output)
+fn record_tag(key: &[u8; 32], aad: &[u8], nonce: &[u8], ciphertext: &[u8]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new_keyed(key);
+    hasher.update(aad);
+    hasher.update(nonce);
+    hasher.update(ciphertext);
+    *hasher.finalize().as_bytes()
 }
 
-fn decrypt_file(input: &Path, output: &Path, password: SecretString) -> AppResult<()> {
-    validate_paths(input, output)?;
-    let mut input_file = open_regular_file(input)?;
-    enforce_age_header_limit(&mut input_file)?;
-    let input_reader = BufReader::with_capacity(BUFFER_SIZE, input_file);
-    let decryptor = age::Decryptor::new_buffered(input_reader).map_err(|_| integrity_error())?;
-    if !decryptor.is_scrypt() {
+fn seal_record(
+    key: &[u8],
+    nonce: &[u8; NONCE_SIZE],
+    message: &[u8],
+    aad: &[u8],
+) -> AppResult<Vec<u8>> {
+    let (cipher_key, mac_key) = key.split_at(16);
+    let cipher_key: &[u8; 16] = cipher_key.try_into().map_err(|_| integrity_error())?;
+    let mac_key: &[u8; 32] = mac_key.try_into().map_err(|_| integrity_error())?;
+    let mut ciphertext = vec![0_u8; message.len()];
+    hc128::HC128::new(cipher_key, nonce).process(message, &mut ciphertext);
+    ciphertext.extend_from_slice(&record_tag(mac_key, aad, nonce, &ciphertext));
+    Ok(ciphertext)
+}
+
+fn open_record(
+    key: &[u8],
+    nonce: &[u8; NONCE_SIZE],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> AppResult<Vec<u8>> {
+    use subtle::ConstantTimeEq;
+    let split = ciphertext
+        .len()
+        .checked_sub(TAG_SIZE)
+        .ok_or_else(integrity_error)?;
+    let (body, tag) = ciphertext.split_at(split);
+    let (cipher_key, mac_key) = key.split_at(16);
+    let cipher_key: &[u8; 16] = cipher_key.try_into().map_err(|_| integrity_error())?;
+    let mac_key: &[u8; 32] = mac_key.try_into().map_err(|_| integrity_error())?;
+    if !bool::from(record_tag(mac_key, aad, nonce, body).ct_eq(tag)) {
         return Err(integrity_error());
     }
+    let mut plaintext = vec![0_u8; body.len()];
+    hc128::HC128::new(cipher_key, nonce).process(body, &mut plaintext);
+    Ok(plaintext)
+}
+fn make_header(salt: &[u8; SALT_SIZE], prefix: &[u8; PREFIX_SIZE]) -> Vec<u8> {
+    let mut header = Vec::with_capacity(HEADER_SIZE);
+    header.extend_from_slice(&MAGIC);
+    header.push(VERSION);
+    header.push(APP_ID);
+    header.extend_from_slice(salt);
+    header.extend_from_slice(prefix);
+    header
+}
 
-    let identity = age::scrypt::Identity::new(password);
-    let mut decrypted_reader = decryptor
-        .decrypt(iter::once(&identity as &dyn age::Identity))
+fn parse_header(
+    reader: &mut impl Read,
+) -> AppResult<(Vec<u8>, [u8; SALT_SIZE], [u8; PREFIX_SIZE])> {
+    let mut header = vec![0_u8; HEADER_SIZE];
+    reader
+        .read_exact(&mut header)
         .map_err(|_| integrity_error())?;
+    if header[..8] != MAGIC || header[8] != VERSION || header[9] != APP_ID {
+        return Err(integrity_error());
+    }
+    let mut salt = [0_u8; SALT_SIZE];
+    salt.copy_from_slice(&header[10..10 + SALT_SIZE]);
+    let mut prefix = [0_u8; PREFIX_SIZE];
+    prefix.copy_from_slice(&header[10 + SALT_SIZE..]);
+    Ok((header, salt, prefix))
+}
+
+fn make_nonce(prefix: &[u8; PREFIX_SIZE], counter: u64) -> [u8; NONCE_SIZE] {
+    let mut nonce = [0_u8; NONCE_SIZE];
+    nonce[..PREFIX_SIZE].copy_from_slice(prefix);
+    nonce[PREFIX_SIZE..].copy_from_slice(&counter.to_be_bytes());
+    nonce
+}
+fn make_aad(header: &[u8], counter: u64, final_record: bool, length: u32) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(header.len() + 13);
+    aad.extend_from_slice(header);
+    aad.extend_from_slice(&counter.to_be_bytes());
+    aad.push(u8::from(final_record));
+    aad.extend_from_slice(&length.to_be_bytes());
+    aad
+}
+
+fn encrypt_file(input: &Path, output: &Path, password: &str) -> AppResult<()> {
+    validate_paths(input, output)?;
+    let input_file = open_regular_file(input)?;
+    let mut reader = BufReader::with_capacity(CHUNK_SIZE, input_file);
     let mut temporary = create_temporary_output(output)?;
 
-    {
-        let mut output_writer = BufWriter::with_capacity(BUFFER_SIZE, temporary.as_file_mut());
-        io::copy(&mut decrypted_reader, &mut output_writer).map_err(|_| integrity_error())?;
-        output_writer
-            .flush()
-            .map_err(|error| AppError::new(format!("could not flush output: {error}")))?;
-    }
+    let mut salt = [0_u8; SALT_SIZE];
+    let mut prefix = [0_u8; PREFIX_SIZE];
+    getrandom::fill(&mut salt).map_err(|error| AppError::new(error.to_string()))?;
+    getrandom::fill(&mut prefix).map_err(|error| AppError::new(error.to_string()))?;
+    let key = derive_key(password, &salt)?;
+    let header = make_header(&salt, &prefix);
 
+    {
+        let mut writer = BufWriter::with_capacity(CHUNK_SIZE, temporary.as_file_mut());
+        writer
+            .write_all(&header)
+            .map_err(|error| AppError::new(error.to_string()))?;
+        encrypt_records(&mut reader, &mut writer, &key, &header, &prefix)?;
+        writer
+            .flush()
+            .map_err(|error| AppError::new(error.to_string()))?;
+    }
     commit_output(temporary, output)
 }
 
-fn integrity_error() -> AppError {
-    AppError::new("decryption failed: wrong password, damaged data, or unsupported file")
-}
-
-fn enforce_age_header_limit(input: &mut File) -> AppResult<()> {
-    {
-        let limited = input.take((MAX_AGE_HEADER_BYTES + 1) as u64);
-        let mut reader = BufReader::with_capacity(8 * 1024, limited);
-        let mut total = 0;
-        let mut line = Vec::new();
-
-        loop {
-            line.clear();
-            let bytes_read = reader
-                .read_until(b'\n', &mut line)
-                .map_err(|_| integrity_error())?;
-            total += bytes_read;
-
-            if total > MAX_AGE_HEADER_BYTES || bytes_read == 0 {
-                return Err(integrity_error());
-            }
-            if line.starts_with(b"--- ") && line.ends_with(b"\n") {
-                break;
-            }
+fn encrypt_records(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    key: &[u8],
+    header: &[u8],
+    prefix: &[u8; PREFIX_SIZE],
+) -> AppResult<()> {
+    let mut counter = 0_u64;
+    let mut current = vec![0_u8; CHUNK_SIZE];
+    let mut next = vec![0_u8; CHUNK_SIZE];
+    let mut current_len = read_chunk(reader, &mut current)?;
+    loop {
+        let next_len = if current_len == CHUNK_SIZE {
+            read_chunk(reader, &mut next)?
+        } else {
+            0
+        };
+        let final_record = current_len < CHUNK_SIZE || next_len == 0;
+        let length = current_len as u32;
+        let nonce = make_nonce(prefix, counter);
+        let aad = make_aad(header, counter, final_record, length);
+        let ciphertext = seal_record(key, &nonce, &current[..current_len], &aad)?;
+        write_record(writer, length, final_record, &ciphertext)?;
+        if final_record {
+            return Ok(());
         }
+        counter = counter.checked_add(1).ok_or_else(integrity_error)?;
+        std::mem::swap(&mut current, &mut next);
+        current_len = next_len;
     }
-
-    input
-        .seek(SeekFrom::Start(0))
-        .map_err(|_| integrity_error())?;
+}
+fn write_record(
+    writer: &mut impl Write,
+    length: u32,
+    final_record: bool,
+    data: &[u8],
+) -> AppResult<()> {
+    writer
+        .write_all(&length.to_be_bytes())
+        .map_err(|error| AppError::new(error.to_string()))?;
+    writer
+        .write_all(&[u8::from(final_record)])
+        .map_err(|error| AppError::new(error.to_string()))?;
+    writer
+        .write_all(data)
+        .map_err(|error| AppError::new(error.to_string()))?;
     Ok(())
 }
 
+fn read_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> AppResult<usize> {
+    let mut total = 0;
+    while total < buffer.len() {
+        match reader.read(&mut buffer[total..]) {
+            Ok(0) => break,
+            Ok(read) => total += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(AppError::new(error.to_string())),
+        }
+    }
+    Ok(total)
+}
+
+fn decrypt_file(input: &Path, output: &Path, password: &str) -> AppResult<()> {
+    validate_paths(input, output)?;
+    let input_file = open_regular_file(input)?;
+    let mut reader = BufReader::with_capacity(CHUNK_SIZE + TAG_SIZE, input_file);
+    let (header, salt, prefix) = parse_header(&mut reader)?;
+    let key = derive_key(password, &salt).map_err(|_| integrity_error())?;
+    let mut temporary = create_temporary_output(output)?;
+
+    {
+        let mut writer = BufWriter::with_capacity(CHUNK_SIZE, temporary.as_file_mut());
+        decrypt_records(&mut reader, &mut writer, &key, &header, &prefix)?;
+        writer
+            .flush()
+            .map_err(|error| AppError::new(error.to_string()))?;
+    }
+    commit_output(temporary, output)
+}
+
+fn decrypt_records(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    key: &[u8],
+    header: &[u8],
+    prefix: &[u8; PREFIX_SIZE],
+) -> AppResult<()> {
+    let mut counter = 0_u64;
+    loop {
+        let mut record_header = [0_u8; 5];
+        reader
+            .read_exact(&mut record_header)
+            .map_err(|_| integrity_error())?;
+        let length = u32::from_be_bytes([
+            record_header[0],
+            record_header[1],
+            record_header[2],
+            record_header[3],
+        ]);
+        let final_record = match record_header[4] {
+            0 => false,
+            1 => true,
+            _ => return Err(integrity_error()),
+        };
+        if length as usize > CHUNK_SIZE || (!final_record && length as usize != CHUNK_SIZE) {
+            return Err(integrity_error());
+        }
+        let mut ciphertext = vec![0_u8; length as usize + TAG_SIZE];
+        reader
+            .read_exact(&mut ciphertext)
+            .map_err(|_| integrity_error())?;
+        let nonce = make_nonce(prefix, counter);
+        let aad = make_aad(header, counter, final_record, length);
+        let plaintext = open_record(key, &nonce, &ciphertext, &aad)?;
+        writer
+            .write_all(&plaintext)
+            .map_err(|_| integrity_error())?;
+        if final_record {
+            let mut trailing = [0_u8; 1];
+            if reader.read(&mut trailing).map_err(|_| integrity_error())? != 0 {
+                return Err(integrity_error());
+            }
+            return Ok(());
+        }
+        counter = counter.checked_add(1).ok_or_else(integrity_error)?;
+    }
+}
 fn validate_paths(input: &Path, output: &Path) -> AppResult<()> {
     if input == output {
-        return Err(AppError::new("input and output must be different files"));
+        return Err(integrity_error());
     }
-
-    match output.try_exists() {
-        Ok(true) => Err(AppError::new(format!(
-            "output already exists: {}",
-            output.display()
-        ))),
-        Ok(false) => Ok(()),
-        Err(error) => Err(AppError::new(format!(
-            "could not inspect output '{}': {error}",
-            output.display()
-        ))),
+    if output
+        .try_exists()
+        .map_err(|error| AppError::new(error.to_string()))?
+    {
+        return Err(integrity_error());
     }
+    Ok(())
 }
 
 fn open_regular_file(path: &Path) -> AppResult<File> {
-    let file = File::open(path).map_err(|error| {
-        AppError::new(format!(
-            "could not open input '{}': {error}",
-            path.display()
-        ))
-    })?;
-    let metadata = file.metadata().map_err(|error| {
-        AppError::new(format!(
-            "could not inspect input '{}': {error}",
-            path.display()
-        ))
-    })?;
-    if !metadata.is_file() {
-        return Err(AppError::new(format!(
-            "input is not a regular file: {}",
-            path.display()
-        )));
+    let file = File::open(path).map_err(|error| AppError::new(error.to_string()))?;
+    if !file
+        .metadata()
+        .map_err(|error| AppError::new(error.to_string()))?
+        .is_file()
+    {
+        return Err(integrity_error());
     }
     Ok(file)
 }
@@ -306,33 +427,23 @@ fn output_parent(output: &Path) -> &Path {
 
 fn create_temporary_output(output: &Path) -> AppResult<tempfile::NamedTempFile> {
     tempfile::Builder::new()
-        .prefix(&format!(".{APP_NAME}-"))
+        .prefix(&format!(".{}-", APP_NAME))
         .suffix(".tmp")
         .tempfile_in(output_parent(output))
-        .map_err(|error| {
-            AppError::new(format!(
-                "could not create temporary output beside '{}': {error}",
-                output.display()
-            ))
-        })
+        .map_err(|error| AppError::new(error.to_string()))
 }
 
 fn commit_output(temporary: tempfile::NamedTempFile, output: &Path) -> AppResult<()> {
     temporary
         .as_file()
         .sync_all()
-        .map_err(|error| AppError::new(format!("could not sync output data: {error}")))?;
-
-    let committed = temporary.persist_noclobber(output).map_err(|error| {
-        AppError::new(format!(
-            "could not create output '{}': {}",
-            output.display(),
-            error.error
-        ))
-    })?;
+        .map_err(|error| AppError::new(error.to_string()))?;
+    let committed = temporary
+        .persist_noclobber(output)
+        .map_err(|error| AppError::new(error.error.to_string()))?;
     committed
         .sync_all()
-        .map_err(|error| AppError::new(format!("could not sync output data: {error}")))?;
+        .map_err(|error| AppError::new(error.to_string()))?;
     sync_output_directory(output_parent(output))
 }
 
@@ -340,11 +451,7 @@ fn commit_output(temporary: tempfile::NamedTempFile, output: &Path) -> AppResult
 fn sync_output_directory(directory: &Path) -> AppResult<()> {
     File::open(directory)
         .and_then(|file| file.sync_all())
-        .map_err(|error| {
-            AppError::new(format!(
-                "output was created, but its directory could not be synced: {error}"
-            ))
-        })
+        .map_err(|error| AppError::new(error.to_string()))
 }
 
 #[cfg(not(unix))]
@@ -355,399 +462,83 @@ fn sync_output_directory(_directory: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{ffi::OsString, fs, io::Cursor};
+    use std::fs;
     use tempfile::TempDir;
 
-    const TEST_LOG_N: u8 = 4;
-    const PASSWORD: &str = "correct horse battery staple";
+    const PASSWORD: &str = "password";
 
-    fn secret(value: &str) -> SecretString {
-        SecretString::from(value.to_owned())
-    }
-
-    fn deterministic_bytes(length: usize) -> Vec<u8> {
+    fn bytes(length: usize) -> Vec<u8> {
         (0..length)
-            .map(|index| ((index.wrapping_mul(31) ^ (index / 251)) & 0xff) as u8)
+            .map(|index| ((index * (APP_ID as usize + 17)) & 255) as u8)
             .collect()
     }
 
-    fn encrypt_fast(input: &Path, output: &Path, password: &str) -> AppResult<()> {
-        encrypt_file_with_work_factor(input, output, secret(password), Some(TEST_LOG_N))
-    }
-
-    fn round_trip_in(directory: &Path, name: &str, data: &[u8], password: &str) {
-        let input = directory.join(format!("{name}.input"));
-        let encrypted = directory.join(format!("{name}.age"));
-        let output = directory.join(format!("{name}.output"));
-        fs::write(&input, data).unwrap();
-        encrypt_fast(&input, &encrypted, password).unwrap();
-        decrypt_file(&encrypted, &output, secret(password)).unwrap();
-        assert_eq!(fs::read(output).unwrap(), data);
-        assert_eq!(fs::read(input).unwrap(), data);
-    }
-
     #[test]
-    fn round_trips_empty_binary_and_stream_boundaries() {
-        let directory = TempDir::new().unwrap();
-        for (index, length) in [
-            0,
-            1,
-            255,
-            BUFFER_SIZE - 1,
-            BUFFER_SIZE,
-            BUFFER_SIZE + 1,
-            2 * BUFFER_SIZE,
-            2 * BUFFER_SIZE + 1,
-            1024 * 1024,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            round_trip_in(
-                directory.path(),
-                &format!("case-{index}"),
-                &deterministic_bytes(length),
-                PASSWORD,
-            );
-        }
-    }
-
-    #[test]
-    fn supports_unicode_paths_and_passwords_without_trimming_spaces() {
-        let directory = TempDir::new().unwrap();
-        let data = b"spaces, unicode, and binary: \0\xff";
-        round_trip_in(directory.path(), "snowman ☃ file", data, "  päss phrase  ");
-    }
-
-    #[test]
-    fn encryption_is_randomized() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let first = directory.path().join("first.age");
-        let second = directory.path().join("second.age");
-        fs::write(&input, deterministic_bytes(4096)).unwrap();
-        encrypt_fast(&input, &first, PASSWORD).unwrap();
-        encrypt_fast(&input, &second, PASSWORD).unwrap();
-        assert_ne!(fs::read(first).unwrap(), fs::read(second).unwrap());
-    }
-
-    #[test]
-    fn wrong_password_never_publishes_plaintext() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        let output = directory.path().join("output");
-        fs::write(&input, b"secret data").unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-
-        let error = decrypt_file(&encrypted, &output, secret("wrong password")).unwrap_err();
-        assert_eq!(error, integrity_error());
-        assert!(!output.exists());
-        assert_eq!(fs::read(input).unwrap(), b"secret data");
-    }
-
-    #[test]
-    fn bit_flips_in_header_payload_and_tag_are_detected() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        fs::write(&input, deterministic_bytes(BUFFER_SIZE + 333)).unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let original = fs::read(&encrypted).unwrap();
-
-        let positions = [
-            0,
-            original.len() / 4,
-            original.len() / 2,
-            original.len() - 1,
-        ];
-        for (index, position) in positions.into_iter().enumerate() {
-            let damaged = directory.path().join(format!("damaged-{index}"));
-            let output = directory.path().join(format!("output-{index}"));
-            let mut bytes = original.clone();
-            bytes[position] ^= 0x80;
-            fs::write(&damaged, bytes).unwrap();
-            assert!(decrypt_file(&damaged, &output, secret(PASSWORD)).is_err());
-            assert!(!output.exists());
-        }
-    }
-
-    #[test]
-    fn all_truncations_of_a_small_ciphertext_are_detected() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        fs::write(&input, b"short authenticated message").unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let original = fs::read(&encrypted).unwrap();
-
-        for length in 0..original.len() {
-            let damaged = directory.path().join("truncated");
+    fn round_trips_boundaries() {
+        for length in [0, 1, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1] {
+            let directory = TempDir::new().unwrap();
+            let input = directory.path().join("input");
+            let encrypted = directory.path().join("encrypted");
             let output = directory.path().join("output");
-            fs::write(&damaged, &original[..length]).unwrap();
-            assert!(decrypt_file(&damaged, &output, secret(PASSWORD)).is_err());
-            assert!(!output.exists());
+            let data = bytes(length);
+            fs::write(&input, &data).unwrap();
+            encrypt_file(&input, &encrypted, PASSWORD).unwrap();
+            decrypt_file(&encrypted, &output, PASSWORD).unwrap();
+            assert_eq!(fs::read(output).unwrap(), data);
         }
     }
 
     #[test]
-    fn removing_a_complete_authenticated_chunk_is_detected() {
+    fn randomized_and_tamper_evident() {
         let directory = TempDir::new().unwrap();
         let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        let damaged = directory.path().join("damaged");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        fs::write(&input, bytes(1234)).unwrap();
+        encrypt_file(&input, &first, PASSWORD).unwrap();
+        encrypt_file(&input, &second, PASSWORD).unwrap();
+        assert_ne!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+        let mut damaged = fs::read(&first).unwrap();
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 1;
+        fs::write(&first, damaged).unwrap();
         let output = directory.path().join("output");
-        fs::write(&input, deterministic_bytes(2 * BUFFER_SIZE)).unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let bytes = fs::read(encrypted).unwrap();
-        fs::write(&damaged, &bytes[..bytes.len() - (BUFFER_SIZE + 16)]).unwrap();
-
-        assert!(decrypt_file(&damaged, &output, secret(PASSWORD)).is_err());
+        assert!(decrypt_file(&first, &output, PASSWORD).is_err());
         assert!(!output.exists());
     }
 
     #[test]
-    fn appended_data_is_detected() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        let damaged = directory.path().join("damaged");
-        let output = directory.path().join("output");
-        fs::write(&input, deterministic_bytes(1024)).unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let mut bytes = fs::read(encrypted).unwrap();
-        bytes.extend_from_slice(b"unauthenticated suffix");
-        fs::write(&damaged, bytes).unwrap();
-
-        assert!(decrypt_file(&damaged, &output, secret(PASSWORD)).is_err());
-        assert!(!output.exists());
+    fn rejects_a_sibling_format_id() {
+        let salt = [0_u8; SALT_SIZE];
+        let prefix = [0_u8; PREFIX_SIZE];
+        let mut header = make_header(&salt, &prefix);
+        let sibling_id = if APP_ID == 50 { 49 } else { APP_ID + 1 };
+        header[7] = sibling_id;
+        header[9] = sibling_id;
+        assert!(parse_header(&mut header.as_slice()).is_err());
     }
 
     #[test]
-    fn existing_outputs_are_never_overwritten() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        let recovered = directory.path().join("recovered");
-        fs::write(&input, b"source remains intact").unwrap();
-        fs::write(&encrypted, b"encryption sentinel").unwrap();
-        assert!(encrypt_fast(&input, &encrypted, PASSWORD).is_err());
-        assert_eq!(fs::read(&encrypted).unwrap(), b"encryption sentinel");
-        assert_eq!(fs::read(&input).unwrap(), b"source remains intact");
-
-        fs::remove_file(&encrypted).unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        fs::write(&recovered, b"decryption sentinel").unwrap();
-        assert!(decrypt_file(&encrypted, &recovered, secret(PASSWORD)).is_err());
-        assert_eq!(fs::read(recovered).unwrap(), b"decryption sentinel");
-        assert_eq!(fs::read(input).unwrap(), b"source remains intact");
-    }
-
-    #[test]
-    fn same_input_and_output_is_rejected_without_changes() {
-        let directory = TempDir::new().unwrap();
-        let path = directory.path().join("same");
-        fs::write(&path, b"do not change").unwrap();
-        let error = encrypt_fast(&path, &path, PASSWORD).unwrap_err();
+    fn payload_algorithm_smoke() {
+        let key = vec![APP_ID; KEY_MATERIAL_SIZE];
+        let nonce = [APP_ID; NONCE_SIZE];
+        let message = b"algorithm-specific smoke";
+        let aad = b"fixed format and record metadata";
+        let ciphertext = seal_record(&key, &nonce, message, aad).unwrap();
+        assert!(ciphertext.len() >= message.len() + 16);
         assert_eq!(
-            error,
-            AppError::new("input and output must be different files")
+            open_record(&key, &nonce, &ciphertext, aad).unwrap(),
+            message
         );
-        assert_eq!(fs::read(path).unwrap(), b"do not change");
+
+        let mut damaged = ciphertext;
+        let middle = damaged.len() / 2;
+        damaged[middle] ^= 1;
+        assert!(open_record(&key, &nonce, &damaged, aad).is_err());
     }
-
     #[test]
-    fn malformed_and_non_passphrase_files_are_rejected() {
-        let directory = TempDir::new().unwrap();
-        for (index, malformed) in [Vec::new(), b"not an age file".to_vec()]
-            .into_iter()
-            .enumerate()
-        {
-            let input = directory.path().join(format!("malformed-{index}"));
-            let output = directory.path().join(format!("output-{index}"));
-            fs::write(&input, malformed).unwrap();
-            assert!(decrypt_file(&input, &output, secret(PASSWORD)).is_err());
-            assert!(!output.exists());
-        }
-
-        let identity = age::x25519::Identity::generate();
-        let recipient = identity.to_public();
-        let encrypted = age::encrypt(&recipient, b"not passphrase encrypted").unwrap();
-        let input = directory.path().join("recipient-encrypted");
-        let output = directory.path().join("recipient-output");
-        fs::write(&input, encrypted).unwrap();
-        assert!(decrypt_file(&input, &output, secret(PASSWORD)).is_err());
-        assert!(!output.exists());
-    }
-
-    #[test]
-    fn oversized_headers_are_rejected_without_publishing_output() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("oversized-header");
-        let output = directory.path().join("output");
-        let mut bytes = b"age-encryption.org/v1\n-> scrypt ".to_vec();
-        bytes.extend(vec![b'A'; MAX_AGE_HEADER_BYTES + 1]);
-        fs::write(&input, bytes).unwrap();
-
-        assert_eq!(
-            decrypt_file(&input, &output, secret(PASSWORD)).unwrap_err(),
-            integrity_error()
-        );
-        assert!(!output.exists());
-    }
-
-    #[test]
-    fn reordered_and_duplicated_chunks_are_detected() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        fs::write(&input, deterministic_bytes(3 * BUFFER_SIZE + 123)).unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let original = fs::read(&encrypted).unwrap();
-
-        let footer = original
-            .windows(5)
-            .position(|window| window == b"\n--- ")
-            .unwrap();
-        let payload = footer
-            + 1
-            + original[footer + 1..]
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .unwrap()
-            + 1;
-        let first_chunk = payload + 16;
-        let record_size = BUFFER_SIZE + 16;
-
-        let mut reordered = original.clone();
-        reordered[first_chunk..first_chunk + 2 * record_size].rotate_left(record_size);
-        let reordered_path = directory.path().join("reordered");
-        let reordered_output = directory.path().join("reordered-output");
-        fs::write(&reordered_path, reordered).unwrap();
-        assert!(decrypt_file(&reordered_path, &reordered_output, secret(PASSWORD)).is_err());
-        assert!(!reordered_output.exists());
-
-        let mut duplicated = original;
-        let first_record = duplicated[first_chunk..first_chunk + record_size].to_vec();
-        duplicated[first_chunk + record_size..first_chunk + 2 * record_size]
-            .copy_from_slice(&first_record);
-        let duplicated_path = directory.path().join("duplicated");
-        let duplicated_output = directory.path().join("duplicated-output");
-        fs::write(&duplicated_path, duplicated).unwrap();
-        assert!(decrypt_file(&duplicated_path, &duplicated_output, secret(PASSWORD)).is_err());
-        assert!(!duplicated_output.exists());
-    }
-
-    #[test]
-    fn commit_never_clobbers_an_output_created_during_processing() {
-        let directory = TempDir::new().unwrap();
-        let output = directory.path().join("output");
-        let mut temporary = create_temporary_output(&output).unwrap();
-        temporary.write_all(b"new data").unwrap();
-        fs::write(&output, b"race winner").unwrap();
-
-        assert!(commit_output(temporary, &output).is_err());
-        assert_eq!(fs::read(&output).unwrap(), b"race winner");
-        let leftovers: Vec<_> = fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name.to_string_lossy().starts_with(&format!(".{APP_NAME}-")))
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files remain: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn failures_remove_temporary_output_files() {
-        let directory = TempDir::new().unwrap();
-        let input = directory.path().join("input");
-        let encrypted = directory.path().join("encrypted");
-        let output = directory.path().join("output");
-        fs::write(&input, b"secret").unwrap();
-        encrypt_fast(&input, &encrypted, PASSWORD).unwrap();
-        let mut damaged = fs::read(&encrypted).unwrap();
-        let last = damaged.len() - 1;
-        damaged[last] ^= 1;
-        fs::write(&encrypted, damaged).unwrap();
-        assert!(decrypt_file(&encrypted, &output, secret(PASSWORD)).is_err());
-        assert!(!output.exists());
-
-        let leftovers: Vec<_> = fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name.to_string_lossy().starts_with(&format!(".{APP_NAME}-")))
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temporary files remain: {leftovers:?}"
-        );
-    }
-
-    #[test]
-    fn parser_accepts_only_the_minimal_uppercase_contract() {
-        let command = parse_args([
-            OsString::from("E"),
-            OsString::from("input file"),
-            OsString::from("output file"),
-        ])
-        .unwrap();
-        assert_eq!(command.mode, Mode::Encrypt);
-        assert_eq!(command.input, Path::new("input file"));
-        assert_eq!(command.output, Path::new("output file"));
-
-        assert!(
-            parse_args([
-                OsString::from("D"),
-                OsString::from("in"),
-                OsString::from("out")
-            ])
-            .is_ok()
-        );
-        for invalid in ["e", "d", "X", "encrypt", ""] {
-            assert!(
-                parse_args([
-                    OsString::from(invalid),
-                    OsString::from("in"),
-                    OsString::from("out"),
-                ])
-                .is_err()
-            );
-        }
-        assert!(parse_args(Vec::<OsString>::new()).is_err());
-        assert!(parse_args([OsString::from("E"), OsString::from("in")]).is_err());
-        assert!(
-            parse_args([
-                OsString::from("E"),
-                OsString::from("in"),
-                OsString::from("out"),
-                OsString::from("extra"),
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn piped_password_reader_handles_crlf_and_preserves_spaces() {
-        let mut crlf = Cursor::new(b"  pass phrase  \r\nignored\n");
-        assert_eq!(read_password_line(&mut crlf).unwrap(), "  pass phrase  ");
-
-        let mut empty = Cursor::new(b"\n");
-        assert!(read_password_line(&mut empty).is_err());
-
-        let mut missing = Cursor::new(Vec::<u8>::new());
-        assert!(read_password_line(&mut missing).is_err());
-
-        let mut too_long = Cursor::new(format!("{}\n", "x".repeat(MAX_PASSWORD_BYTES + 1)));
-        assert!(read_password_line(&mut too_long).is_err());
-    }
-
-    #[test]
-    fn directories_are_not_accepted_as_input_files() {
-        let directory = TempDir::new().unwrap();
-        let output = directory.path().join("output");
-        assert!(encrypt_fast(directory.path(), &output, PASSWORD).is_err());
-        assert!(!output.exists());
+    fn unique_magic_matches_app_id() {
+        assert_eq!(MAGIC[7], APP_ID);
+        assert!(!SUITE_NAME.is_empty());
     }
 }

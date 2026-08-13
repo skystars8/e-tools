@@ -9,6 +9,7 @@ use std::{
 use tempfile::TempDir;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_x32");
+const APP_ID: u8 = 32;
 const PASSWORD: &str = "integration-test passphrase";
 
 fn run_cli(mode: &str, input: &Path, output: &Path) -> Output {
@@ -68,7 +69,7 @@ fn run_cli(mode: &str, input: &Path, output: &Path) -> Output {
 fn real_cli_uses_production_encryption_and_preserves_exact_data() {
     let directory = TempDir::new().unwrap();
     let input = directory.path().join("input file.bin");
-    let encrypted = directory.path().join("encrypted file.age");
+    let encrypted = directory.path().join("encrypted file.x32");
     let restored = directory.path().join("restored file.bin");
     let data: Vec<u8> = (0..(128 * 1024 + 17))
         .map(|index| ((index * 31) & 0xff) as u8)
@@ -81,6 +82,9 @@ fn real_cli_uses_production_encryption_and_preserves_exact_data() {
         "encryption failed: {}",
         String::from_utf8_lossy(&encrypted_result.stderr)
     );
+    let encrypted_bytes = fs::read(&encrypted).unwrap();
+    assert_eq!(&encrypted_bytes[..7], &[69, 84, 79, 79, 76, 0, 0]);
+    assert_eq!(encrypted_bytes[7], APP_ID);
     let decrypted_result = run_cli("D", &encrypted, &restored);
     assert!(
         decrypted_result.status.success(),

@@ -1,139 +1,73 @@
-# etools
+# e-tools
 
-This folder contains 50 independent Rust CLI packages named `x1` through `x50`.
-Every package uses Rust edition 2024, declares Rust 1.97.1 as its minimum
-supported version, and implements the same interoperable authenticated file
-format.
+This workspace contains 50 standalone password-file encryption applications. The rule is literal: **x1 through x50 use 50 different payload-encryption algorithm families**. A KDF change, key-size change, mode change, or chunk-size change does not count as a different payload algorithm.
 
-## Apps and algorithms
+All apps keep the same command-line contract:
 
-All 50 `src/main.rs` files are byte-for-byte identical, and their manifests
-have the same dependencies apart from the package name. Consequently, every
-app performs the same algorithm:
+```text
+xN E|D <input> <output>
+```
 
-**age v1 passphrase encryption: scrypt, HKDF-SHA-256/HMAC-SHA-256, and
-ChaCha20-Poly1305 STREAM.**
+The password prompt, bounded password derivation, authenticated record framing, temporary-output handling, and no-clobber commit are shared safety concepts. Each crate still owns its implementation, format ID, dependencies, payload primitive, tests, and README. Ciphertexts are deliberately rejected by every sibling app.
 
-At encryption time, age generates a random file key and 16-byte salt. Scrypt
-(`r = 8`, `p = 1`, and a calibrated `N = 2^log_n` work factor) derives a
-wrapping key from the password. ChaCha20-Poly1305 wraps the file key,
-HKDF-SHA-256 derives the header and payload keys, and HMAC-SHA-256
-authenticates the header. The file payload is then streamed in authenticated
-64 KiB ChaCha20-Poly1305 chunks. Chunk counters and a final-chunk flag detect
-modification, reordering, duplication, appended data, and truncation.
+| App | Payload algorithm | Record protection | Intended status |
+|---|---|---|---|
+| [x1](x1/README.md) | AES-256-GCM | Native AEAD | Modern |
+| [x2](x2/README.md) | ChaCha20-Poly1305 | Native AEAD | Modern |
+| [x3](x3/README.md) | Ascon-AEAD128 | Native AEAD | Standardized; crate unaudited |
+| [x4](x4/README.md) | AEGIS-256 | Native AEAD | Experimental |
+| [x5](x5/README.md) | XSalsa20-Poly1305 | Secretbox | Established construction |
+| [x6](x6/README.md) | Deoxys-II-256 | Native AEAD | Experimental |
+| [x7](x7/README.md) | ISAP-Keccak-128A | Native AEAD | Experimental |
+| [x8](x8/README.md) | MORUS-1280-128 | Native AEAD | Experimental |
+| [x9](x9/README.md) | Gimli-AEAD | Native AEAD | Educational |
+| [x10](x10/README.md) | Xoodyak | Native AEAD | Experimental |
+| [x11](x11/README.md) | Forro14-Poly1305 | Native AEAD | Experimental |
+| [x12](x12/README.md) | KCipher-2 | HMAC Encrypt-then-MAC | Specialized |
+| [x13](x13/README.md) | SNOW-V-GCM | Native AEAD | Experimental |
+| [x14](x14/README.md) | Strumok | HMAC Encrypt-then-MAC | Specialized |
+| [x15](x15/README.md) | Enocoro-128v2 | HMAC Encrypt-then-MAC | Educational |
+| [x16](x16/README.md) | HC-128 | HMAC Encrypt-then-MAC | Educational |
+| [x17](x17/README.md) | Turing | HMAC Encrypt-then-MAC | Educational |
+| [x18](x18/README.md) | NORX64-4-1 | Native AEAD | Experimental / legacy |
+| [x19](x19/README.md) | Grain-128AEADv2 | Native AEAD | Experimental |
+| [x20](x20/README.md) | Romulus-M | Native AEAD | Experimental |
+| [x21](x21/README.md) | Saturnin-CTR-Cascade | Native AEAD | Experimental |
+| [x22](x22/README.md) | MKV128-256-GCM | Native AEAD | Experimental |
+| [x23](x23/README.md) | BLAKE3-AEAD | Native authenticated cipher | Research-only |
+| [x24](x24/README.md) | Kalyna-256/256-GCM | Native AEAD | Specialized |
+| [x25](x25/README.md) | ZUC-128 | HMAC Encrypt-then-MAC | Specialized |
+| [x26](x26/README.md) | SIMON128-256 | HMAC Encrypt-then-MAC | Educational |
+| [x27](x27/README.md) | SPECK128-256 | HMAC Encrypt-then-MAC | Educational |
+| [x28](x28/README.md) | CAST6-256 | HMAC Encrypt-then-MAC | Legacy |
+| [x29](x29/README.md) | RC6-256 | HMAC Encrypt-then-MAC | Legacy |
+| [x30](x30/README.md) | IDEA-128 | HMAC Encrypt-then-MAC | Legacy |
+| [x31](x31/README.md) | SEED-128 | HMAC Encrypt-then-MAC | Legacy |
+| [x32](x32/README.md) | PRESENT-128 | HMAC Encrypt-then-MAC | Educational |
+| [x33](x33/README.md) | Magma | HMAC Encrypt-then-MAC | Legacy |
+| [x34](x34/README.md) | Trivium | HMAC Encrypt-then-MAC | Educational |
+| [x35](x35/README.md) | ARIA-256 | HMAC Encrypt-then-MAC | Standardized; crate unaudited |
+| [x36](x36/README.md) | Camellia-256 | HMAC Encrypt-then-MAC | Standardized; crate unaudited |
+| [x37](x37/README.md) | Serpent-256 | HMAC Encrypt-then-MAC | AES finalist; crate unaudited |
+| [x38](x38/README.md) | Twofish-256 | HMAC Encrypt-then-MAC | AES finalist; crate unaudited |
+| [x39](x39/README.md) | Kuznyechik | HMAC Encrypt-then-MAC | Standardized; crate unaudited |
+| [x40](x40/README.md) | SM4 | HMAC Encrypt-then-MAC | Standardized; crate unaudited |
+| [x41](x41/README.md) | Blowfish | HMAC Encrypt-then-MAC | Legacy; educational only |
+| [x42](x42/README.md) | BELT-DWP | Native AEAD plus outer HMAC EtM | Standardized; crate unaudited |
+| [x43](x43/README.md) | GIFT-128 | HMAC Encrypt-then-MAC | Experimental |
+| [x44](x44/README.md) | Threefish-256 | HMAC Encrypt-then-MAC | Experimental |
+| [x45](x45/README.md) | LEA-256 | HMAC Encrypt-then-MAC | Specialized |
+| [x46](x46/README.md) | Spritz | HMAC Encrypt-then-MAC | Educational only |
+| [x47](x47/README.md) | Rabbit | HMAC Encrypt-then-MAC | Legacy |
+| [x48](x48/README.md) | TEA-32 | HMAC Encrypt-then-MAC | Broken / educational only |
+| [x49](x49/README.md) | Skipjack | HMAC Encrypt-then-MAC | Broken / educational only |
+| [x50](x50/README.md) | RC4-drop3072 | HMAC Encrypt-then-MAC | Broken / educational only |
 
-| App | Algorithm |
-| --- | --- |
-| [x1](x1/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x2](x2/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x3](x3/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x4](x4/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x5](x5/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x6](x6/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x7](x7/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x8](x8/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x9](x9/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x10](x10/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x11](x11/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x12](x12/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x13](x13/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x14](x14/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x15](x15/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x16](x16/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x17](x17/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x18](x18/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x19](x19/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x20](x20/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x21](x21/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x22](x22/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x23](x23/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x24](x24/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x25](x25/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x26](x26/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x27](x27/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x28](x28/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x29](x29/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x30](x30/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x31](x31/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x32](x32/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x33](x33/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x34](x34/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x35](x35/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x36](x36/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x37](x37/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x38](x38/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x39](x39/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x40](x40/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x41](x41/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x42](x42/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x43](x43/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x44](x44/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x45](x45/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x46](x46/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x47](x47/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x48](x48/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x49](x49/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
-| [x50](x50/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+Run the workspace guard before accepting changes:
 
-## Minimal use
+```powershell
+./verify-algorithms.ps1
+cargo test --workspace
+```
 
-Build one app from this directory:
-
-~~~powershell
-cargo build --release -p x1
-~~~
-
-Encrypt or decrypt with exactly a mode, input path, and output path:
-
-~~~powershell
-.\target\release\x1.exe E "input file.bin" "encrypted file.age"
-.\target\release\x1.exe D "encrypted file.age" "restored file.bin"
-~~~
-
-`E` and `D` are intentionally uppercase. The app securely prompts for the
-password; encryption asks for confirmation when used in a terminal. When
-standard input is piped, one password line is read so the CLI can be automated
-without placing a password in process arguments or an environment variable.
-
-All 50 apps use the age v1 passphrase format, so (for example) `x50` can decrypt
-a file encrypted by `x1`.
-
-## Safety and integrity
-
-- A per-file random salt and adaptive scrypt work factor protect human
-  passphrases.
-- Authenticated streaming encryption detects wrong passwords, modified data,
-  reordered data, appended data, and truncation, including removal of a whole
-  authenticated chunk.
-- File data is streamed with bounded memory instead of loading an entire file.
-- The requested output is published only after encryption finishes or after
-  decryption reaches an authenticated end of file.
-- Existing output paths are never overwritten, and input files are never
-  changed or deleted.
-- Temporary outputs are created beside the requested output and are removed on
-  ordinary failure. A machine crash can leave a randomly named `.xN-*.tmp`
-  file; during decryption that temporary file can contain plaintext.
-
-Choose a strong, unique passphrase and keep it safe. There is no recovery
-mechanism for a forgotten passphrase.
-
-## Verification
-
-Each package contains 18 unit tests plus a real-binary integration test. Across
-the workspace that is 950 package-local tests covering exact binary round
-trips, empty and multi-chunk files, production scrypt settings, randomized
-ciphertexts, wrong passwords, bit flips, truncation at every byte of a small
-ciphertext, whole-chunk removal, reordered and duplicated chunks, appended
-data, oversized and malformed headers, race-safe non-overwrite behavior,
-cleanup, Unicode paths, password input, CLI parsing, process exit status, and
-secret-free captured output.
-
-~~~powershell
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-~~~
-
-Dependency versions are recorded in the workspace `Cargo.lock`; the direct
-cryptography and file-handling dependencies are also pinned exactly in every
-package manifest.
+The verifier requires 50 declared payload algorithms and 50 distinct `src/main.rs` hashes. These custom file formats have not had an independent cryptographic audit. The legacy and educational apps exist to meet the explicit algorithm-diversity requirement and must not be used for sensitive data.
