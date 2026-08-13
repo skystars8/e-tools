@@ -5,6 +5,76 @@ Every package uses Rust edition 2024, declares Rust 1.97.1 as its minimum
 supported version, and implements the same interoperable authenticated file
 format.
 
+## Apps and algorithms
+
+All 50 `src/main.rs` files are byte-for-byte identical, and their manifests
+have the same dependencies apart from the package name. Consequently, every
+app performs the same algorithm:
+
+**age v1 passphrase encryption: scrypt, HKDF-SHA-256/HMAC-SHA-256, and
+ChaCha20-Poly1305 STREAM.**
+
+At encryption time, age generates a random file key and 16-byte salt. Scrypt
+(`r = 8`, `p = 1`, and a calibrated `N = 2^log_n` work factor) derives a
+wrapping key from the password. ChaCha20-Poly1305 wraps the file key,
+HKDF-SHA-256 derives the header and payload keys, and HMAC-SHA-256
+authenticates the header. The file payload is then streamed in authenticated
+64 KiB ChaCha20-Poly1305 chunks. Chunk counters and a final-chunk flag detect
+modification, reordering, duplication, appended data, and truncation.
+
+| App | Algorithm |
+| --- | --- |
+| [x1](x1/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x2](x2/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x3](x3/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x4](x4/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x5](x5/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x6](x6/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x7](x7/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x8](x8/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x9](x9/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x10](x10/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x11](x11/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x12](x12/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x13](x13/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x14](x14/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x15](x15/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x16](x16/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x17](x17/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x18](x18/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x19](x19/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x20](x20/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x21](x21/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x22](x22/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x23](x23/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x24](x24/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x25](x25/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x26](x26/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x27](x27/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x28](x28/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x29](x29/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x30](x30/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x31](x31/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x32](x32/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x33](x33/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x34](x34/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x35](x35/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x36](x36/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x37](x37/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x38](x38/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x39](x39/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x40](x40/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x41](x41/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x42](x42/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x43](x43/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x44](x44/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x45](x45/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x46](x46/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x47](x47/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x48](x48/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x49](x49/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+| [x50](x50/README.md) | age v1 passphrase: scrypt + HKDF/HMAC-SHA-256 + ChaCha20-Poly1305 STREAM |
+
 ## Minimal use
 
 Build one app from this directory:
